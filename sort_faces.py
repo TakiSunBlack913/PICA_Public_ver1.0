@@ -13,6 +13,9 @@ TEST_DIR = "test_data"
 MODEL_FILE = "face_classifier_model.pkl"
 # 識別結果を振り分けるフォルダ
 OUTPUT_DIR = "sorted_output"
+# 識別のしきい値 (この確率未満の場合、Unknownとして分類する)
+# 0.70 = 70% の確信度を最低限要求する
+CONFIDENCE_THRESHOLD = 0.70
 
 # 識別のしきい値 (この数値が小さいほど、厳密な一致が求められる)
 # 0.5〜0.6程度が一般的。今回は分類器を使うため、一旦予測結果を信頼します。
@@ -54,28 +57,40 @@ for filename in os.listdir(TEST_DIR):
             
             # 顔が検出された場合
             if len(face_locations) > 0:
-                # 検出された全ての顔の特徴量を抽出 (このアプリでは最初の顔を識別対象とします)
+                # 検出された最初の顔の特徴量を抽出
                 encodings = face_recognition.face_encodings(image, [face_locations[0]])
-                
-                # 特徴量をモデルが扱える形式に変換
                 test_encoding = encodings[0].reshape(1, -1)
                 
-                # SVMモデルで人物を予測
-                prediction_numeric = clf.predict(test_encoding)
+                # --- Unknown識別と信頼度計算のロジック ---
                 
-                # 数値予測を元の人物名（ラベル）に戻す
-                predicted_name = le.inverse_transform(prediction_numeric)[0]
+                # 1. 各クラス（人物）に対する予測確率を取得
+                probabilities = clf.predict_proba(test_encoding)[0]
                 
-                sorted_results[predicted_name].append(filename)
+                # 2. 最も高い確率（確信度）と、そのインデックスを取得
+                max_proba = np.max(probabilities)
+                max_index = np.argmax(probabilities)
+                
+                # 3. しきい値に基づいて人物名を決定
+                if max_proba >= CONFIDENCE_THRESHOLD:
+                    # 確信度がしきい値以上の場合、人物を特定
+                    prediction_numeric = np.array([max_index])
+                    predicted_name = le.inverse_transform(prediction_numeric)[0]
+                else:
+                    # 確信度が低い場合、Unknownとする
+                    predicted_name = "Unknown"
+                    
+                # 予測結果を格納 (ファイル名と確信度をタプルで格納)
+                sorted_results[predicted_name].append((filename, max_proba))
                 
             else:
                 # 顔が検出されなかった場合
-                sorted_results["Unknown (No Face)"].append(filename)
+                # 確信度0.0として格納
+                sorted_results["Unknown (No Face)"].append((filename, 0.0))
 
         except Exception as e:
             # 画像ファイル破損などのエラー処理
             print(f"⚠️ ファイル {filename} の処理中にエラーが発生しました: {e}")
-            sorted_results["Unknown (Error)"].append(filename)
+            sorted_results["Unknown (Error)"].append((filename, 0.0)) # エラーの場合もタプル形式で格納
 
 
 # --- 4. 識別結果の提示 (コア要件) ---
@@ -85,16 +100,32 @@ print(f"🎯 識別結果の概要 ({total_files_processed} ファイル処理�
 print("="*50)
 
 # 人物名ごとに結果をソートして表示
-for name, files in sorted_results.items():
-    print(f"\n👤 **人物名: {name} ({len(files)} 枚)**")
-    
+for name, files_with_proba in sorted_results.items(): # ✅ OK (files_with_probaを使用)
+    print(f"\n👤 **人物名: {name} ({len(files_with_proba)} 枚)**")
+
     # 簡潔にリスト表示
     print("  [ファイル一覧]:")
+
+    # 確信度を表示するようにリストを整形
+    display_files = []
+    # files_with_proba は [(filename, proba), ...] のタプルリスト
+    for filename, proba in files_with_proba:
+        # Unknown/エラーの場合、確信度は表示しない
+        if name in ["Unknown (No Face)", "Unknown (Error)", "Unknown"]:
+            confidence_str = ""
+        else:
+            # それ以外の場合、確信度をパーセンテージで表示
+            confidence_str = f" ({proba * 100:.2f}%)"
+            
+        display_files.append(f"{filename}{confidence_str}")
+
+
     # ファイル名が多い場合は、表示を一部省略
-    if len(files) > 5:
-        print(f"    - {', '.join(files[:5])}, ... ({len(files)-5} more)")
+    if len(files_with_proba) > 5: # ✅ 修正: files_with_proba を使用
+        print(f"    - {', '.join(display_files[:5])}, ... ({len(files_with_proba)-5} more)") # ✅ 修正: display_files と files_with_proba を使用
     else:
-        print(f"    - {', '.join(files)}")
+        print(f"    - {', '.join(display_files)}") # ✅ 修正: display_files を使用
+
 
 # --- 5. フォルダへの振り分け (副次的な機能) ---
 
@@ -104,12 +135,14 @@ if total_files_processed > 0:
     # 出力ディレクトリを作成
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     
-    for name, files in sorted_results.items():
+    # ✅ 修正: files_with_proba を使用
+    for name, files_with_proba in sorted_results.items(): 
         # Unknownファイルも専用フォルダへ
         output_dir = os.path.join(OUTPUT_DIR, name)
         os.makedirs(output_dir, exist_ok=True)
         
-        for filename in files:
+        # ✅ 修正: タプルから filename と proba を展開
+        for filename, proba in files_with_proba: 
             source_path = os.path.join(TEST_DIR, filename)
             dest_path = os.path.join(output_dir, filename)
             
