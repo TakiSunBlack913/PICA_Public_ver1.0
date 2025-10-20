@@ -1,0 +1,5 @@
+sorted_output/*
+test_data/*
+train_data/*
+*.pkl
+.env
